@@ -1,202 +1,180 @@
-# Dashboard de Control Operativo WhatsApp
+# Dashboard de Control Operativo WhatsApp — Dropi
 
-API REST + dashboard web para monitoreo en tiempo real de campañas de mensajería masiva por WhatsApp. Construido sobre Node.js 22 y PostgreSQL, con enfoque en rendimiento, seguridad y mantenibilidad.
+API REST + Dashboard Web Multi-Tenant para monitoreo en tiempo real de campañas de mensajería masiva por WhatsApp. Construido sobre Node.js 22 y PostgreSQL, con enfoque en rendimiento, aislamiento estricto de datos por cliente (tenant isolation) y seguridad JWT.
 
 ![Node.js](https://img.shields.io/badge/Node.js-22.x-339933?logo=nodedotjs&logoColor=white)
 ![Express](https://img.shields.io/badge/Express-4.x-000000?logo=express&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-pg_driver-4169E1?logo=postgresql&logoColor=white)
+![JWT](https://img.shields.io/badge/Auth-JWT_Stateless-000000?logo=jsonwebtokens&logoColor=white)
 ![Zod](https://img.shields.io/badge/Validation-Zod-3E67B1)
 ![Docker](https://img.shields.io/badge/Deploy-Docker%20%2B%20Nixpacks-2496ED?logo=docker&logoColor=white)
 
 ---
 
-## ¿Qué hace?
+## 🔒 Autenticación y Modelo Multi-Tenant
 
-Expone una API que agrega y presenta métricas operativas de envíos de WhatsApp: tasas de entrega, tendencias temporales, análisis de fallos y rendimiento por cuenta y país. El frontend estático es servido directamente desde el mismo proceso Express.
+El dashboard opera bajo un modelo de aislamiento **Multi-Tenant**:
+- **Sin registro público:** No existe un endpoint `POST /register`. Todo el alta de usuarios es **100% manual por SQL** realizado por los administradores de la base de datos.
+- **Acceso por JWT:** El usuario realiza login en `/api/auth/login` y obtiene un JWT firmado.
+- **Tenant Isolation:** En cada consulta, la capa de repositorios filtra los registros aplicando el array de subcuentas asignadas al usuario (`id_subcuenta = ANY($2::int[])`).
+- **Rol Admin:** Los usuarios con `rol = 'admin'` realizan un bypass automático y pueden visualizar datos globales.
 
 ---
 
-## Arquitectura
+## 🏗️ Arquitectura del Sistema
 
-Patrón en capas **Controller → Service → Repository** con responsabilidades estrictamente separadas.
+Patrón en capas **Controller → Service → Repository**:
 
 ```
-Cliente Web
-    │
-    ▼ HTTP
-Express Server
-    │
-    ├── Middleware stack (Helmet · CORS · Rate limit · Zod validation)
-    │
-    ├── Controllers    →  reciben la request, delegan, responden
-    ├── Services       →  lógica de negocio, caché en memoria
-    └── Repositories   →  queries SQL parametrizadas contra PostgreSQL
-```
-
-Las consultas de agregación pesada (`/summary`) se ejecutan en **paralelo** con `Promise.all`:
-
-```js
-const [kpis, countries, processes, integrityIssues] = await Promise.all([
-  repo.getGlobalKpis(from, to),
-  repo.getByCountry(from, to),
-  repo.getByProcess(from, to),
-  repo.getIntegrityIssues(from, to),
-]);
+Cliente Web (SPA) ──► HTTP / Bearer JWT ──► Express Server
+                                                │
+    ┌───────────────────────────────────────────┴───────────────────────────────────────────┐
+    │ Middlewares (Helmet · Rate Limit · JWT Auth (auth.middleware) · Zod Validation)        │
+    └───────────────────────────────────────────┬───────────────────────────────────────────┘
+                                                ▼
+    ┌───────────────────────────────────────────────────────────────────────────────────────┐
+    │ Controllers ──► Services (Cache por User ID) ──► Repositories (SQL Parametrizado)      │
+    └───────────────────────────────────────────┬───────────────────────────────────────────┘
+                                                ▼
+                                    PostgreSQL (Pool `pg`)
 ```
 
 ---
 
-## Stack
-
-| Área | Tecnología | Motivo |
-|---|---|---|
-| Runtime | Node.js 22 | LTS activo, soporte nativo de `--watch` |
-| Framework | Express 4 | Maduro, ecosistema probado |
-| Base de datos | PostgreSQL + `pg` | Queries parametrizadas, pool de conexiones |
-| Validación | Zod | Schemas tipados, parsing seguro de query params |
-| Seguridad | Helmet + express-rate-limit | Cabeceras HTTP + protección contra abuso |
-| Caché | node-cache | TTL configurable, sin dependencia externa |
-| Logging | Pino | Logging estructurado JSON en producción |
-| Deploy | Docker + Nixpacks + Easypanel | CI/CD automático desde GitHub |
-
----
-
-## API Reference
-
-> 📘 **Documentación detallada completa:** Consulta [API_DOCUMENTATION.md](file:///C:/Users/Osman/Documents/Trabajo/Dropi/Comercial/Dashboard/API_DOCUMENTATION.md) para ver ejemplos de payloads JSON, respuestas de error, políticas de validación Zod y arquitectura detallada por componentes.
-
-Base path: `/api` · Rate limit: **60 req/min por IP**
-
-| Método | Ruta | Descripción |
-|---|---|---|
-| `GET` | `/api/summary` | KPIs globales + semáforo de salud por país y proceso |
-| `GET` | `/api/trend` | Evolución temporal de envíos (filtrable por país y subcuenta) |
-| `GET` | `/api/detail` | Detalle paginado subcuenta × proceso con campo `unreported` |
-| `GET` | `/api/not-delivered` | Envíos fallidos con filtros |
-| `GET` | `/api/not-delivered/reasons` | Catálogo de motivos de fallo |
-| `GET` | `/api/accounts` | Listado de cuentas activas |
-| `GET` | `/api/account/:name` | Métricas por cuenta en rango de fechas |
-| `GET` | `/health` | Health check del servicio |
-
-### Validación de parámetros
-
-Todos los endpoints validan con Zod antes de tocar la base de datos. Un parámetro inválido retorna `400` con detalle del error:
-
-```json
-{
-  "error": "Parámetros inválidos",
-  "details": [
-    { "field": "from", "message": "\"from\" no puede ser mayor que \"to\"" }
-  ]
-}
-```
-
-Reglas del rango de fechas:
-- `from` y `to` requeridos, formato `YYYY-MM-DD`
-- `from` ≤ `to`
-- Rango máximo: **120 días**
-
-Paginación en `/detail` y `/not-delivered`: `limit` (máx. 200) + `offset`.
-
----
-
-## Semáforo de salud
-
-`/api/summary` calcula el estado de cada país y proceso según su tasa de entrega:
-
-| Tasa de entrega | Estado |
-|---|---|
-| > 93% | 🟢 Verde |
-| 85% – 93% | 🟡 Ámbar |
-| < 85% | 🔴 Rojo |
-
----
-
-## Seguridad
-
-- **Sin SQL injection** — todas las queries usan placeholders parametrizados (`$1`, `$2`, ...)
-- **Helmet** — cabeceras de seguridad HTTP en cada respuesta
-- **Rate limiting** — 60 peticiones/minuto por IP antes de llegar a cualquier controller
-- **Validación estricta de entorno** — el proceso no arranca si falta alguna variable requerida
-- **Graceful shutdown** — captura `SIGTERM`/`SIGINT`, cierra HTTP y el pool de Postgres antes de salir
-
----
-
-## Estructura del proyecto
-
-```
-├── public/
-│   ├── dashboard_control_whatsapp.html   # Frontend estático
-│   ├── logo.png                          # Logo de marca Dropi
-│   └── favicon.png                       # Favicon del dashboard
-├── server/
-│   ├── index.js                          # Entrypoint + graceful shutdown
-│   └── src/
-│       ├── app.js                        # Express app, middlewares y rutas
-│       ├── config/
-│       │   ├── env.js                    # Validación de entorno con Zod
-│       │   ├── db.js                     # Pool de conexiones PostgreSQL
-│       │   └── cache.js                  # Caché en memoria (node-cache)
-│       ├── routes/
-│       │   └── api.router.js             # Definición de rutas
-│       ├── controllers/                  # Reciben request, delegan a services
-│       ├── services/                     # Lógica de negocio + caché
-│       ├── repositories/                 # Queries SQL
-│       ├── middlewares/
-│       │   ├── validate.middleware.js    # Validador Zod genérico
-│       │   ├── rateLimiter.middleware.js # Rate limit por IP
-│       │   └── error.middleware.js       # Error handler centralizado
-│       ├── schemas/
-│       │   └── query.schema.js           # Schemas Zod reutilizables
-│       └── utils/
-│           └── logger.js                 # Pino (JSON / pretty según entorno)
-├── .env.example
-└── package.json
-```
-
----
-
-## Desarrollo local
+## 🚀 Instalación y Desarrollo Local
 
 ```bash
-# Instalar dependencias
+# 1. Clonar el repositorio e instalar dependencias (incluye bcryptjs y jsonwebtoken)
 npm install
 
-# Configurar entorno
+# 2. Configurar el archivo de entorno
 cp .env.example .env
 
-# Arrancar con recarga automática
+# 3. Iniciar el servidor en modo desarrollo (recarga automática con node --watch)
 npm run dev
 ```
 
-Disponible en `http://localhost:3000`. El servidor recarga automáticamente al guardar cambios gracias a `node --watch`.
+El servidor estará disponible en `http://localhost:3000`.
 
 ---
 
-## Variables de entorno
+## ⚙️ Variables de Entorno
+
+Configurar las siguientes variables en `.env`:
 
 ```env
 PORT=3000
-NODE_ENV=production
+NODE_ENV=development
 
-PG_HOST=
+# Base de datos
+PG_HOST=localhost
 PG_PORT=5432
-PG_DB=
-PG_USER=
-PG_PASSWORD=
+PG_DB=dashboard_db
+PG_USER=postgres
+PG_PASSWORD=secret
 PG_SSL=false
 
+# Caché
 CACHE_TTL_SECONDS=60
+
+# Autenticación JWT (Obligatorias)
+JWT_SECRET=0b56fba7da4b3ef2365811ab0be6fbfe9b85ae5bc319066aa1cb2aebe0ef00a0
+JWT_EXPIRES_IN=8h
 ```
 
-El esquema se valida con Zod al arrancar. Si falta algún campo, el proceso termina con un mensaje descriptivo del error.
+### ¿Cómo generar una clave `JWT_SECRET` segura?
+Puedes generar una cadena aleatoria segura de 64 caracteres ejecutando en la terminal:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
 
 ---
 
-## Deploy
+## 👤 Gestión Manual de Usuarios (Alta por SQL)
 
-El proyecto se despliega automáticamente en **Easypanel** vía webhook de GitHub. Nixpacks detecta el runtime de Node y genera el Dockerfile sin configuración adicional.
+Puesto que **no existe registro público**, la creación de clientes y la asignación de subcuentas se hace directamente por SQL.
 
+### 1. Generar la contraseña encriptada con Bcrypt
+Genera el hash de la contraseña usando Node.js:
+
+```bash
+node -e "console.log(require('bcryptjs').hashSync('contraseña_del_cliente', 10))"
 ```
-git push origin master  →  GitHub webhook  →  Easypanel build  →  contenedor activo
+
+### 2. Crear el Cliente en la Tabla `clientes`
+```sql
+-- Ejemplo 1: Crear un usuario Cliente
+INSERT INTO comercial_marketing.clientes (
+  nombre_cliente, 
+  email, 
+  password_hash, 
+  rol, 
+  activo
+) VALUES (
+  'Dropi Colombia', 
+  'colombia@dropi.co', 
+  '$2b$10$ca4.TOdBnLVAssvqjq8W9.MMwTUYtJF/c64rq1XOYQd1atq1NLjXW', -- Hash generado
+  'cliente', 
+  true
+);
+
+-- Ejemplo 2: Crear un Administrador Global
+INSERT INTO comercial_marketing.clientes (
+  nombre_cliente, 
+  email, 
+  password_hash, 
+  rol, 
+  activo
+) VALUES (
+  'Administrador Principal', 
+  'admin@dropi.co', 
+  '$2b$10$ca4.TOdBnLVAssvqjq8W9.MMwTUYtJF/c64rq1XOYQd1atq1NLjXW', 
+  'admin', 
+  true
+);
 ```
+
+### 3. Asignar Subcuentas al Cliente (`cliente_subcuentas`)
+Vincula el `id_cliente` recién creado con las subcuentas (`id_subcuenta`) que tiene permitido visualizar:
+
+```sql
+-- Asignar las subcuentas 10, 11 y 12 al Cliente con id_cliente = 2
+INSERT INTO comercial_marketing.cliente_subcuentas (id_cliente, id_subcuenta) 
+VALUES 
+  (2, 10),
+  (2, 11),
+  (2, 12);
+```
+
+---
+
+## 🔌 Endpoints de la API
+
+> 📘 **Documentación detallada:** Consulta [API_DOCUMENTATION.md](file:///C:/Users/Osman/Documents/Trabajo/Dropi/Comercial/Dashboard/API_DOCUMENTATION.md) para ver payloads completas de respuesta y especificación de parámetros.
+
+Base path: `/api` · Requiere cabecera `Authorization: Bearer <token>` (excepto login y health).
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| `POST` | `/api/auth/login` | Autenticación pública (recibe email/password, retorna JWT y perfil) |
+| `GET` | `/api/summary` | KPIs globales + semáforo filtrado por tenant |
+| `GET` | `/api/trend` | Evolución temporal de envíos filtrada por tenant |
+| `GET` | `/api/detail` | Detalle paginado subcuenta × proceso filtrado por tenant |
+| `GET` | `/api/not-delivered` | Envíos fallidos filtrados por tenant |
+| `GET` | `/api/not-delivered/export` | Exportación CSV de fallos filtrada por tenant |
+| `GET` | `/api/not-delivered/reasons` | Motivos de fallo asociados al tenant |
+| `GET` | `/api/accounts` | Subcuentas permitidas para el usuario |
+| `GET` | `/api/account/:name` | Métricas de una cuenta específica |
+| `GET` | `/health` | Health check del servicio (Público) |
+
+---
+
+## 🛡️ Seguridad e Integridad
+
+- **Prevención de IDOR:** El cliente no puede inyectar subcuentas ni roles en los parámetros de la petición; el backend aplica estrictamente los claims del JWT firmado.
+- **SQL Injection:** Todas las consultas usan sentencias preparadas parametrizadas (`$1`, `$2`, ...).
+- **Semáforo de Salud:**
+  - 🟢 **Verde:** Tasa de entrega > 93%
+  - 🟡 **Ámbar:** Tasa de entrega 85% – 93%
+  - 🔴 **Rojo:** Tasa de entrega < 85%
