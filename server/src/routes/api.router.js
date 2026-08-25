@@ -5,6 +5,9 @@ const router = express.Router();
 
 const { validate } = require('../middlewares/validate.middleware');
 const { exportLimiter } = require('../middlewares/rateLimiter.middleware');
+const { authenticateJWT } = require('../middlewares/auth.middleware');
+const authRouter = require('./auth.router');
+
 const {
   summaryQuerySchema,
   trendQuerySchema,
@@ -20,6 +23,12 @@ const trendCtrl = require('../controllers/trend.controller');
 const detailCtrl = require('../controllers/detail.controller');
 const notDeliveredCtrl = require('../controllers/notDelivered.controller');
 const accountCtrl = require('../controllers/account.controller');
+
+// ── Rutas Públicas (Autenticación) ──────────────────────────────────────────
+router.use('/auth', authRouter);
+
+// ── Rutas Protegidas por JWT ───────────────────────────────────────────────
+router.use(authenticateJWT);
 
 // ── Summary ──────────────────────────────────────────────────────────────────
 router.get('/summary', validate(summaryQuerySchema), summaryCtrl.getSummary);

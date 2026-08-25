@@ -279,6 +279,7 @@
         <input type="date" id="dateTo" class="date-input">
       </div>
     </div>
+    <button id="btnLogout" class="quick-btn" style="border:1px solid var(--border); color:var(--red); padding:6px 10px; cursor:pointer;" title="Cerrar Sesión">Salir</button>
   </div>
 </header>
 
@@ -497,7 +498,16 @@
 /* ============================================================
    Dashboard Control WhatsApp — API Client
    Conectado a /api/* (Express + PostgreSQL)
-   ============================================================ */
+/* ---------- Autenticación ---------- */
+if (!localStorage.getItem('auth_token')) {
+  window.location.href = '/login.html';
+}
+
+document.getElementById('btnLogout')?.addEventListener('click', () => {
+  localStorage.removeItem('auth_token');
+  localStorage.removeItem('auth_user');
+  window.location.href = '/login.html';
+});
 
 /* ---------- Utilidades de UI ---------- */
 const PROCESS_COLORS = {
@@ -709,9 +719,24 @@ document.querySelectorAll('.quick-btn').forEach(btn=>{
 });
 
 /* ── API CALLS ────────────────────────────────────────── */
-async function apiFetch(path){
-  const res = await fetch(path);
-  if(!res.ok) throw new Error(`API error ${res.status}: ${path}`);
+async function apiFetch(path, options = {}) {
+  const token = localStorage.getItem('auth_token');
+  if (!token) {
+    window.location.href = '/login.html';
+    return;
+  }
+  const headers = {
+    ...options.headers,
+    'Authorization': `Bearer ${token}`
+  };
+  const res = await fetch(path, { ...options, headers });
+  if (res.status === 401) {
+    localStorage.removeItem('auth_token');
+    localStorage.removeItem('auth_user');
+    window.location.href = '/login.html';
+    return;
+  }
+  if (!res.ok) throw new Error(`API error ${res.status}: ${path}`);
   return res.json();
 }
 
@@ -868,7 +893,7 @@ document.getElementById('btnNdNext')?.addEventListener('click', ()=>{
 });
 
 /* ── EXPORTACIÓN CSV — NO ENTREGADOS ─────────────────── */
-document.getElementById('btnExportNd')?.addEventListener('click', ()=>{
+document.getElementById('btnExportNd')?.addEventListener('click', async () => {
   const params = new URLSearchParams({
     from: currentFrom,
     to:   currentTo,
@@ -876,13 +901,38 @@ document.getElementById('btnExportNd')?.addEventListener('click', ()=>{
     ...(ndFilters.reason  && { reason:  ndFilters.reason }),
   });
 
-  // El browser dispara la descarga directamente — sin JS adicional
-  const a = document.createElement('a');
-  a.href = `/api/not-delivered/export?${params}`;
-  a.download = ''; // usa el filename que manda el servidor vía Content-Disposition
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+  const token = localStorage.getItem('auth_token');
+  if (!token) {
+    window.location.href = '/login.html';
+    return;
+  }
+
+  try {
+    const res = await fetch(`/api/not-delivered/export?${params}`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+
+    if (res.status === 401) {
+      localStorage.removeItem('auth_token');
+      localStorage.removeItem('auth_user');
+      window.location.href = '/login.html';
+      return;
+    }
+
+    if (!res.ok) throw new Error('Error al exportar CSV');
+
+    const blob = await res.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `no_entregados_${currentFrom}_${currentTo}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
+  } catch (err) {
+    showError('Error exportando CSV');
+  }
 });
 
 /* ── UTILIDAD DE DEBOUNCE (Optimizador de rendimiento) ── */

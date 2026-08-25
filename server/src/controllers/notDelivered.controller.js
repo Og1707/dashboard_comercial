@@ -5,7 +5,7 @@ const notDeliveredService = require('../services/notDelivered.service');
 const getNotDelivered = async (req, res, next) => {
   try {
     const { from, to, country, reason, limit, offset } = req.validated_query;
-    const data = await notDeliveredService.getNotDelivered(from, to, { country, reason, limit, offset });
+    const data = await notDeliveredService.getNotDelivered(from, to, { country, reason, limit, offset }, req.user);
     res.json(data);
   } catch (err) {
     next(err);
@@ -14,7 +14,7 @@ const getNotDelivered = async (req, res, next) => {
 
 const getFailureReasons = async (req, res, next) => {
   try {
-    const reasons = await notDeliveredService.getFailureReasons();
+    const reasons = await notDeliveredService.getFailureReasons(req.user);
     res.json({ reasons });
   } catch (err) {
     next(err);
@@ -24,7 +24,7 @@ const getFailureReasons = async (req, res, next) => {
 const exportNotDelivered = async (req, res, next) => {
   try {
     const { from, to, country, reason } = req.validated_query;
-    const { buffer, count } = await notDeliveredService.exportNotDeliveredCsv(from, to, { country, reason });
+    const { buffer, count } = await notDeliveredService.exportNotDeliveredCsv(from, to, { country, reason }, req.user);
 
     const filename = `no_entregados_${from}_${to}.csv`;
 

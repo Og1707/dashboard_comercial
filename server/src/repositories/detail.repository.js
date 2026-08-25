@@ -5,15 +5,14 @@ const db = require('../config/db');
 const SCHEMA = 'comercial_marketing';
 
 /**
- * Detalle operativo: subcuenta → proceso con métricas reales.
- * - processed = SUM(foe.monto_total) — total de personas del envío
- * - delivered = COUNT(m.entregado = TRUE)
- * - failed    = COUNT(m.entregado = FALSE)
- * - rate      = delivered / processed * 100
- * Filtro temporal sobre foe.fecha_entrega.
+ * Detalle operativo: subcuenta → proceso con métricas reales y filtrado tenant.
+ * @param {string} from
+ * @param {string} to
+ * @param {Object} queryOptions
+ * @param {Object} user
  */
-const getDetail = async (from, to, { country, process, search, limit = 50, offset = 0 }) => {
-  const params = [from, to];
+const getDetail = async (from, to, { country, process, search, limit = 50, offset = 0 }, user) => {
+  const params = [from, to, user.is_admin, user.subcuentas];
   const filters = [];
 
   if (country) {
@@ -31,7 +30,7 @@ const getDetail = async (from, to, { country, process, search, limit = 50, offse
 
   const whereExtra = filters.length ? 'AND ' + filters.join(' AND ') : '';
 
-  // CTE base: órdenes en el rango filtrado
+  // CTE base: órdenes en el rango filtrado por tenant
   const cteBase = `
     WITH ordenes AS (
       SELECT
@@ -40,17 +39,23 @@ const getDetail = async (from, to, { country, process, search, limit = 50, offse
         foe.id_pais,
         foe.id_tipo_envio,
         foe.monto_total,
-        foe.fecha_entrega
+        foe.fecha_entrega,
+        dte.categoria_template
       FROM ${SCHEMA}.fact_ordenes_entregadas foe
       INNER JOIN ${SCHEMA}.dim_tipo_envio dte ON foe.id_tipo_envio = dte.id_tipo_envio
-      INNER JOIN ${SCHEMA}.paises dp ON foe.id_pais = dp.id_pais
-      LEFT  JOIN ${SCHEMA}.dim_subcuentas s ON foe.id_subcuenta = s.id_subcuenta
+      LEFT JOIN ${SCHEMA}.dim_subcuentas s ON foe.id_subcuenta = s.id_subcuenta
+      LEFT JOIN ${SCHEMA}.paises dp ON foe.id_pais = dp.id_pais
       WHERE foe.fecha_entrega >= $1::date
         AND foe.fecha_entrega < ($2::date + INTERVAL '1 day')
         AND dte.activo = TRUE
+        AND (
+          ($3::boolean = true)
+          OR (
+            foe.id_subcuenta = ANY($4::int[])
+          )
+        )
         ${whereExtra}
     ),
-    -- procesados: SUM(monto_total) agrupado sin tocar mensajes
     procesados AS (
       SELECT
         o.id_subcuenta,
@@ -59,10 +64,9 @@ const getDetail = async (from, to, { country, process, search, limit = 50, offse
       FROM ordenes o
       GROUP BY o.id_subcuenta, o.id_tipo_envio
     ),
-    -- mensajes: conteo de entregados/fallidos y costo
     mensajes AS (
       SELECT
-        foe.id_subcuenta,
+        o.id_subcuenta,
         m.id_tipo_envio,
         COUNT(m.id_mensaje) FILTER (WHERE m.entregado = TRUE)  AS delivered,
         COUNT(m.id_mensaje) FILTER (WHERE m.entregado = FALSE) AS failed,
@@ -71,14 +75,12 @@ const getDetail = async (from, to, { country, process, search, limit = 50, offse
         ), 0) AS cost
       FROM ordenes o
       INNER JOIN ${SCHEMA}.fact_mensajes_ghl m ON m.id_orden = o.id_orden
-      INNER JOIN ${SCHEMA}.fact_ordenes_entregadas foe ON foe.id_orden = o.id_orden
-      LEFT  JOIN ${SCHEMA}.dim_tipo_envio dte ON o.id_tipo_envio = dte.id_tipo_envio
-      LEFT  JOIN ${SCHEMA}.tarifas_whatsapp tw
+      LEFT JOIN ${SCHEMA}.tarifas_whatsapp tw
         ON o.id_pais = tw.id_pais
-        AND dte.categoria_template = tw.categoria_template
+        AND o.categoria_template = tw.categoria_template
         AND tw.activo = TRUE
         AND o.fecha_entrega::date BETWEEN tw.fecha_vigencia_desde AND COALESCE(tw.fecha_vigencia_hasta, '9999-12-31')
-      GROUP BY foe.id_subcuenta, m.id_tipo_envio
+      GROUP BY o.id_subcuenta, m.id_tipo_envio
     )
   `;
 

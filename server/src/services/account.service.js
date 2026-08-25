@@ -20,12 +20,12 @@ const mapProcess = (row) => ({
   sema: semaColor(row.rate),
 });
 
-const getAccounts = async () => repo.getAccounts();
+const getAccounts = async (user) => repo.getAccounts(user);
 
-const getAccountData = async (from, to, name, { limit = 10, offset = 0 } = {}) => {
+const getAccountData = async (from, to, name, { limit = 10, offset = 0 } = {}, user) => {
   const [processes, worklistData] = await Promise.all([
-    repo.getAccountKpis(from, to, name),
-    repo.getAccountWorkList(name, { limit, offset }),
+    repo.getAccountKpis(from, to, name, user),
+    repo.getAccountWorkList(name, { limit, offset }, user),
   ]);
 
   const mappedProcesses = processes.map(mapProcess);

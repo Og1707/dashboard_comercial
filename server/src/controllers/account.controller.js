@@ -4,7 +4,7 @@ const accountService = require('../services/account.service');
 
 const getAccounts = async (req, res, next) => {
   try {
-    const accounts = await accountService.getAccounts();
+    const accounts = await accountService.getAccounts(req.user);
     res.json({ accounts });
   } catch (err) {
     next(err);
@@ -15,7 +15,7 @@ const getAccountData = async (req, res, next) => {
   try {
     const { name } = req.validated_params;
     const { from, to, limit, offset } = req.validated_query;
-    const data = await accountService.getAccountData(from, to, name, { limit, offset });
+    const data = await accountService.getAccountData(from, to, name, { limit, offset }, req.user);
     res.json(data);
   } catch (err) {
     next(err);

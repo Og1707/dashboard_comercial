@@ -19,8 +19,8 @@ const mapRow = (row) => ({
   templateCategory: row.template_category,
 });
 
-const getDetail = async (from, to, filters) => {
-  const { total, rows } = await repo.getDetail(from, to, filters);
+const getDetail = async (from, to, filters, user) => {
+  const { total, rows } = await repo.getDetail(from, to, filters, user);
   return {
     total,
     rows: rows.map(mapRow),

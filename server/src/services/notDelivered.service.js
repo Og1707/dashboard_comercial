@@ -14,8 +14,8 @@ const mapRow = (row) => ({
   date:        row.date       || null,
 });
 
-const getNotDelivered = async (from, to, filters) => {
-  const { total, rows } = await repo.getNotDelivered(from, to, filters);
+const getNotDelivered = async (from, to, filters, user) => {
+  const { total, rows } = await repo.getNotDelivered(from, to, filters, user);
   return {
     total,
     rows: rows.map(mapRow),
@@ -24,7 +24,7 @@ const getNotDelivered = async (from, to, filters) => {
   };
 };
 
-const getFailureReasons = async () => repo.getFailureReasons();
+const getFailureReasons = async (user) => repo.getFailureReasons(user);
 
 /**
  * Escapa un valor para incluirlo en una celda CSV:
@@ -93,8 +93,8 @@ const buildCsvBuffer = (rows) => {
 /**
  * Obtiene todos los registros (sin paginación) y retorna el CSV como Buffer.
  */
-const exportNotDeliveredCsv = async (from, to, filters) => {
-  const rows = await repo.getNotDeliveredForExport(from, to, filters);
+const exportNotDeliveredCsv = async (from, to, filters, user) => {
+  const rows = await repo.getNotDeliveredForExport(from, to, filters, user);
   const mappedRows = rows.map(mapRow);
   return {
     buffer: buildCsvBuffer(mappedRows),

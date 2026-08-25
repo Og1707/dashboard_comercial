@@ -13,6 +13,8 @@ const envSchema = z.object({
   PG_PASSWORD: z.string().min(1, 'PG_PASSWORD es requerido'),
   PG_SSL: z.string().transform((val) => val === 'true').default('false'),
   CACHE_TTL_SECONDS: z.string().transform(Number).default('60'),
+  JWT_SECRET: z.string().min(32, 'JWT_SECRET debe tener al menos 32 caracteres'),
+  JWT_EXPIRES_IN: z.string().default('8h'),
 });
 
 const parsed = envSchema.safeParse(process.env);

@@ -9,7 +9,6 @@ const cache = require('../config/cache');
 const fmtDateEs = (d) => {
   const meses = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
   const date = new Date(d);
-  // Sumar un día para compensar UTC offset
   date.setUTCHours(12);
   return `${meses[date.getUTCMonth()]} ${date.getUTCDate()}`;
 };
@@ -29,33 +28,27 @@ const buildDayList = (from, to) => {
 };
 
 /**
- * Transforma las filas planas {fecha_dia, proceso, total} en la estructura
- * que espera el dashboard: { days: [...], series: { proceso: [...] } }
- *
- * - Rellena con 0 los días sin datos para mantener el gráfico alineado.
+ * Transforma las filas planas {fecha_dia, proceso, total} en la estructura esperada por el dashboard.
  */
-const getTrend = async (from, to, country = null, subcuenta = null) => {
+const getTrend = async (from, to, country = null, subcuenta = null, user) => {
   const scope = subcuenta ? `sub:${subcuenta}` : (country && country !== 'Todos' ? country : 'Todos');
-  const cacheKey = `trend:${from}:${to}:${scope}`;
+  const cacheKey = `trend:${user.id}:${from}:${to}:${scope}`;
   const cached = cache.get(cacheKey);
   if (cached) return cached;
 
-  const rows = await repo.getTrendSeries(from, to, scope === 'Todos' ? null : country, subcuenta);
+  const rows = await repo.getTrendSeries(from, to, scope === 'Todos' ? null : country, subcuenta, user);
 
   const dayList = buildDayList(from, to);
   const dayLabels = dayList.map(fmtDateEs);
 
-  // Identificar todos los procesos presentes en los datos
   const processNames = [...new Set(rows.map((r) => r.proceso))].sort();
 
-  // Construir mapa rápido { 'fecha:proceso' -> total }
   const lookup = {};
   rows.forEach((r) => {
     const key = `${r.fecha_dia.toISOString ? r.fecha_dia.toISOString().slice(0, 10) : String(r.fecha_dia).slice(0, 10)}:${r.proceso}`;
     lookup[key] = parseInt(r.total, 10);
   });
 
-  // Rellenar series con 0 para días sin datos
   const series = {};
   processNames.forEach((proc) => {
     series[proc] = dayList.map((day) => lookup[`${day}:${proc}`] || 0);

@@ -5,9 +5,10 @@ const db = require('../config/db');
 const SCHEMA = 'comercial_marketing';
 
 /**
- * Lista todas las subcuentas disponibles.
+ * Lista todas las subcuentas disponibles filtradas por tenant.
+ * @param {Object} user
  */
-const getAccounts = async () => {
+const getAccounts = async (user) => {
   const sql = `
     SELECT
       s.id_subcuenta,
@@ -17,18 +18,25 @@ const getAccounts = async () => {
       p.codigo_iso2       AS code
     FROM ${SCHEMA}.dim_subcuentas s
     INNER JOIN ${SCHEMA}.paises p ON s.id_pais = p.id_pais
+    WHERE 
+      ($1::boolean = true)
+      OR (
+        s.id_subcuenta = ANY($2::int[])
+      )
     ORDER BY p.nombre_pais ASC, s.nombre_subcuenta ASC
   `;
-  const { rows } = await db.query(sql, []);
+  const { rows } = await db.query(sql, [user.is_admin, user.subcuentas]);
   return rows;
 };
 
 /**
  * KPIs + métricas por proceso para una subcuenta específica.
- * La subcuenta se filtra correctamente vía id_subcuenta / id_orden 
- * para evitar contaminación de datos entre subcuentas del mismo país.
+ * @param {string} from
+ * @param {string} to
+ * @param {string} subcuentaName
+ * @param {Object} user
  */
-const getAccountKpis = async (from, to, subcuentaName) => {
+const getAccountKpis = async (from, to, subcuentaName, user) => {
   const sql = `
     SELECT
       dte.nombre_tipo_envio                                                       AS process,
@@ -63,19 +71,28 @@ const getAccountKpis = async (from, to, subcuentaName) => {
       AND tw.activo = TRUE
       AND m.fecha_envio::date BETWEEN tw.fecha_vigencia_desde AND COALESCE(tw.fecha_vigencia_hasta, '9999-12-31')
     WHERE s.nombre_subcuenta = $3
+      AND (
+        ($4::boolean = true)
+        OR (
+          s.id_subcuenta = ANY($5::int[])
+        )
+      )
     GROUP BY dte.id_tipo_envio, dte.nombre_tipo_envio
     ORDER BY rate ASC
   `;
-  const { rows } = await db.query(sql, [from, to, subcuentaName]);
+  const { rows } = await db.query(sql, [from, to, subcuentaName, user.is_admin, user.subcuentas]);
   return rows;
 };
 
 /**
  * No entregados de hoy para una subcuenta (lista de trabajo operativa).
- * Se vincula mediante dim_subcuenta_procesos para asegurar que solo devuelva errores 
- * de los procesos asignados activamente a la subcuenta seleccionada.
+ * @param {string} subcuentaName
+ * @param {Object} pagination
+ * @param {Object} user
  */
-const getAccountWorkList = async (subcuentaName, { limit = 10, offset = 0 } = {}) => {
+const getAccountWorkList = async (subcuentaName, { limit = 10, offset = 0 } = {}, user) => {
+  const params = [subcuentaName, user.is_admin, user.subcuentas];
+
   const joins = `
     FROM ${SCHEMA}.dim_subcuentas s
     INNER JOIN ${SCHEMA}.fact_ordenes_entregadas foe 
@@ -94,11 +111,19 @@ const getAccountWorkList = async (subcuentaName, { limit = 10, offset = 0 } = {}
 
   const where = `
     WHERE s.nombre_subcuenta = $1
+      AND (
+        ($2::boolean = true)
+        OR (
+          s.id_subcuenta = ANY($3::int[])
+        )
+      )
       AND m.entregado = FALSE
       AND m.fecha_envio >= CURRENT_DATE - INTERVAL '30 days'
   `;
 
   const countSql = `SELECT COUNT(*) AS total ${joins} ${where}`;
+
+  const dataParams = [...params, limit, offset];
 
   const dataSql = `
     SELECT
@@ -111,12 +136,12 @@ const getAccountWorkList = async (subcuentaName, { limit = 10, offset = 0 } = {}
     ${joins}
     ${where}
     ORDER BY m.fecha_envio DESC
-    LIMIT $2 OFFSET $3
+    LIMIT $4 OFFSET $5
   `;
 
   const [countRes, dataRes] = await Promise.all([
-    db.query(countSql, [subcuentaName]),
-    db.query(dataSql, [subcuentaName, limit, offset]),
+    db.query(countSql, params),
+    db.query(dataSql, dataParams),
   ]);
 
   return {
@@ -126,4 +151,3 @@ const getAccountWorkList = async (subcuentaName, { limit = 10, offset = 0 } = {}
 };
 
 module.exports = { getAccounts, getAccountKpis, getAccountWorkList };
-

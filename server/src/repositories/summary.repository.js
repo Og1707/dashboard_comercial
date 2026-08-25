@@ -5,13 +5,12 @@ const db = require('../config/db');
 const SCHEMA = 'comercial_marketing';
 
 /**
- * KPIs globales.
- * processed = SUM(foe.monto_total) — calculado en subquery separada para evitar
- *             producto cartesiano con fact_mensajes_ghl.
- * delivered/failed = COUNT desde fact_mensajes_ghl via id_orden.
- * Filtro temporal sobre foe.fecha_entrega.
+ * KPIs globales filtrados por tenant.
+ * @param {string} from
+ * @param {string} to
+ * @param {Object} user
  */
-const getGlobalKpis = async (from, to) => {
+const getGlobalKpis = async (from, to, user) => {
   const sql = `
     WITH ordenes AS (
       SELECT
@@ -19,12 +18,20 @@ const getGlobalKpis = async (from, to) => {
         foe.id_pais,
         foe.id_tipo_envio,
         foe.monto_total,
-        foe.fecha_entrega
+        foe.fecha_entrega,
+        dte.categoria_template
       FROM ${SCHEMA}.fact_ordenes_entregadas foe
-      INNER JOIN ${SCHEMA}.dim_tipo_envio dte ON foe.id_tipo_envio = dte.id_tipo_envio
+      INNER JOIN ${SCHEMA}.dim_tipo_envio dte 
+        ON foe.id_tipo_envio = dte.id_tipo_envio
       WHERE foe.fecha_entrega >= $1::date
         AND foe.fecha_entrega < ($2::date + INTERVAL '1 day')
         AND dte.activo = TRUE
+        AND (
+          ($3::boolean = true)
+          OR (
+            foe.id_subcuenta = ANY($4::int[])
+          )
+        )
     ),
     totales AS (
       SELECT COALESCE(SUM(monto_total), 0) AS processed
@@ -38,13 +45,14 @@ const getGlobalKpis = async (from, to) => {
           CASE WHEN m.entregado = TRUE THEN COALESCE(t.costo_unitario_usd, 0) ELSE 0 END
         ), 0) AS total_cost
       FROM ordenes o
-      INNER JOIN ${SCHEMA}.fact_mensajes_ghl m ON m.id_orden = o.id_orden
-      LEFT JOIN ${SCHEMA}.dim_tipo_envio dte ON o.id_tipo_envio = dte.id_tipo_envio
+      INNER JOIN ${SCHEMA}.fact_mensajes_ghl m 
+        ON m.id_orden = o.id_orden
       LEFT JOIN ${SCHEMA}.tarifas_whatsapp t
         ON o.id_pais = t.id_pais
-        AND dte.categoria_template = t.categoria_template
+        AND o.categoria_template = t.categoria_template
         AND t.activo = TRUE
-        AND o.fecha_entrega::date BETWEEN t.fecha_vigencia_desde AND COALESCE(t.fecha_vigencia_hasta, '9999-12-31')
+        AND o.fecha_entrega >= t.fecha_vigencia_desde 
+        AND o.fecha_entrega < (COALESCE(t.fecha_vigencia_hasta, '9999-12-31')::date + INTERVAL '1 day')
     )
     SELECT
       t.processed,
@@ -53,36 +61,46 @@ const getGlobalKpis = async (from, to) => {
       m.total_cost,
       CASE
         WHEN t.processed = 0 THEN 0
-        ELSE ROUND(m.delivered * 100.0 / t.processed, 1)
+        ELSE ROUND(m.delivered * 100.0 / NULLIF(t.processed, 0), 1)
       END AS rate
-    FROM totales t, mensajes m
+    FROM totales t
+    CROSS JOIN mensajes m;
   `;
-  const { rows } = await db.query(sql, [from, to]);
+  const { rows } = await db.query(sql, [from, to, user.is_admin, user.subcuentas]);
   return rows[0];
 };
 
 /**
- * Métricas por país.
- * processed = SUM(foe.monto_total) agrupado por país sin JOIN a mensajes.
- * delivered/failed = COUNT desde mensajes agrupado por país.
+ * Métricas por país filtradas por tenant.
+ * @param {string} from
+ * @param {string} to
+ * @param {Object} user
  */
-const getByCountry = async (from, to) => {
+const getByCountry = async (from, to, user) => {
   const sql = `
     WITH ordenes AS (
       SELECT
         foe.id_orden,
         foe.id_pais,
-        foe.id_tipo_envio,
         foe.monto_total,
-        foe.fecha_entrega
+        foe.fecha_entrega,
+        dte.categoria_template
       FROM ${SCHEMA}.fact_ordenes_entregadas foe
       INNER JOIN ${SCHEMA}.dim_tipo_envio dte ON foe.id_tipo_envio = dte.id_tipo_envio
       WHERE foe.fecha_entrega >= $1::date
         AND foe.fecha_entrega < ($2::date + INTERVAL '1 day')
         AND dte.activo = TRUE
+        AND (
+          ($3::boolean = true)
+          OR (
+            foe.id_subcuenta = ANY($4::int[])
+          )
+        )
     ),
     procesados AS (
-      SELECT id_pais, SUM(monto_total) AS processed
+      SELECT 
+        id_pais, 
+        SUM(monto_total) AS processed
       FROM ordenes
       GROUP BY id_pais
     ),
@@ -96,12 +114,12 @@ const getByCountry = async (from, to) => {
         ), 0) AS cost
       FROM ordenes o
       INNER JOIN ${SCHEMA}.fact_mensajes_ghl m ON m.id_orden = o.id_orden
-      LEFT JOIN ${SCHEMA}.dim_tipo_envio dte ON o.id_tipo_envio = dte.id_tipo_envio
       LEFT JOIN ${SCHEMA}.tarifas_whatsapp tw
         ON o.id_pais = tw.id_pais
-        AND dte.categoria_template = tw.categoria_template
+        AND o.categoria_template = tw.categoria_template
         AND tw.activo = TRUE
-        AND o.fecha_entrega::date BETWEEN tw.fecha_vigencia_desde AND COALESCE(tw.fecha_vigencia_hasta, '9999-12-31')
+        AND o.fecha_entrega >= tw.fecha_vigencia_desde
+        AND o.fecha_entrega < (COALESCE(tw.fecha_vigencia_hasta, '9999-12-31')::date + INTERVAL '1 day')
       GROUP BY o.id_pais
     )
     SELECT
@@ -120,16 +138,17 @@ const getByCountry = async (from, to) => {
     LEFT JOIN mensajes mg ON mg.id_pais = p.id_pais
     ORDER BY rate ASC
   `;
-  const { rows } = await db.query(sql, [from, to]);
+  const { rows } = await db.query(sql, [from, to, user.is_admin, user.subcuentas]);
   return rows;
 };
 
 /**
- * Métricas por proceso.
- * processed = SUM(foe.monto_total) agrupado por proceso.
- * delivered/failed = COUNT desde mensajes agrupado por proceso.
+ * Métricas por proceso filtradas por tenant.
+ * @param {string} from
+ * @param {string} to
+ * @param {Object} user
  */
-const getByProcess = async (from, to) => {
+const getByProcess = async (from, to, user) => {
   const sql = `
     WITH ordenes AS (
       SELECT
@@ -143,6 +162,12 @@ const getByProcess = async (from, to) => {
       WHERE foe.fecha_entrega >= $1::date
         AND foe.fecha_entrega < ($2::date + INTERVAL '1 day')
         AND dte.activo = TRUE
+        AND (
+          ($3::boolean = true)
+          OR (
+            foe.id_subcuenta = ANY($4::int[])
+          )
+        )
     ),
     procesados AS (
       SELECT id_tipo_envio, SUM(monto_total) AS processed
@@ -183,14 +208,17 @@ const getByProcess = async (from, to) => {
     LEFT JOIN mensajes mg ON mg.id_tipo_envio = p.id_tipo_envio
     ORDER BY rate ASC
   `;
-  const { rows } = await db.query(sql, [from, to]);
+  const { rows } = await db.query(sql, [from, to, user.is_admin, user.subcuentas]);
   return rows;
 };
 
 /**
- * Auditoría de integridad: subcuentas con órdenes sin mensajes registrados.
+ * Auditoría de integridad filtrada por tenant.
+ * @param {string} from
+ * @param {string} to
+ * @param {Object} user
  */
-const getIntegrityIssues = async (from, to) => {
+const getIntegrityIssues = async (from, to, user) => {
   const sql = `
     SELECT COUNT(*) AS issues
     FROM (
@@ -200,18 +228,26 @@ const getIntegrityIssues = async (from, to) => {
       WHERE foe.fecha_entrega >= $1::date
         AND foe.fecha_entrega < ($2::date + INTERVAL '1 day')
         AND m.id_mensaje IS NULL
+        AND (
+          ($3::boolean = true)
+          OR (
+            foe.id_subcuenta = ANY($4::int[])
+          )
+        )
       GROUP BY foe.id_subcuenta
     ) sub
   `;
-  const { rows } = await db.query(sql, [from, to]);
+  const { rows } = await db.query(sql, [from, to, user.is_admin, user.subcuentas]);
   return parseInt(rows[0]?.issues || 0, 10);
 };
 
 /**
- * Cruce país × proceso: SUM(monto_total) para el heatmap.
- * Sin JOIN a mensajes — solo conteo de órdenes por dimensiones.
+ * Cruce país × proceso filtrado por tenant.
+ * @param {string} from
+ * @param {string} to
+ * @param {Object} user
  */
-const getByCountryProcess = async (from, to) => {
+const getByCountryProcess = async (from, to, user) => {
   const sql = `
     SELECT
       dp.nombre_pais                            AS country_name,
@@ -224,10 +260,16 @@ const getByCountryProcess = async (from, to) => {
     WHERE foe.fecha_entrega >= $1::date
       AND foe.fecha_entrega < ($2::date + INTERVAL '1 day')
       AND dte.activo = TRUE
+      AND (
+        ($3::boolean = true)
+        OR (
+          foe.id_subcuenta = ANY($4::int[])
+        )
+      )
     GROUP BY dp.nombre_pais, dp.codigo_iso2, dte.nombre_tipo_envio
     ORDER BY dp.nombre_pais ASC, dte.nombre_tipo_envio ASC
   `;
-  const { rows } = await db.query(sql, [from, to]);
+  const { rows } = await db.query(sql, [from, to, user.is_admin, user.subcuentas]);
   return rows;
 };
 
