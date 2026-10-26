@@ -1,4 +1,4 @@
-# Dashboard de Control Operativo WhatsApp — Dropi
+# Dashboard de Control Operativo WhatsApp
 
 API REST + Dashboard Web Multi-Tenant para monitoreo en tiempo real de campañas de mensajería masiva por WhatsApp. Construido sobre Node.js 22 y PostgreSQL, con enfoque en rendimiento, aislamiento estricto de datos por cliente (tenant isolation) y seguridad JWT.
 
